@@ -94,7 +94,23 @@ const studentSchema = new mongoose.Schema({
     category: { type: String },
     selfRated: { type: Number, min: 1, max: 10 }
   }],
-  
+
+  // Learning Progress (for Skills Hub)
+  learningProgress: {
+    type: Map,
+    of: {
+      startedAt: { type: Date },
+      completedSteps: [{ type: Number }],
+      lastActivity: { type: Date }
+    },
+    default: {}
+  },
+
+  // Learning Goals (for Skills Recommendations)
+  learningGoals: [{
+    type: String
+  }],
+
   // Projects
   projects: [{
     title: { type: String },
