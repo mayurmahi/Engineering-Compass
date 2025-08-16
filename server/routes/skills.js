@@ -3,6 +3,118 @@ const router = express.Router();
 const auth = require('../middleware/auth');
 const Student = require('../models/Student');
 
+// OpenRouter AI Integration
+const generateAIQuestions = async (categories, studentProfile = null) => {
+  try {
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://engineering-compass.com',
+        'X-Title': 'Engineering Compass'
+      },
+      body: JSON.stringify({
+        model: 'meta-llama/llama-3.1-8b-instruct:free',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an AI assistant helping to create personalized skills assessment questions for engineering students. Generate 5-7 relevant questions in JSON format.'
+          },
+          {
+            role: 'user',
+            content: `Generate assessment questions for these skill categories: ${categories.join(', ')}. 
+            ${studentProfile ? `Student profile: Branch - ${studentProfile.branch}, Career Goals - ${studentProfile.careerGoals?.join(', ')}` : ''}
+            
+            Return JSON format:
+            {
+              "questions": [
+                {
+                  "id": 1,
+                  "category": "category_name",
+                  "question": "Question text?",
+                  "type": "multiple_choice" or "multiple_select",
+                  "options": [
+                    {"value": "option_key", "label": "Option text", "score": 1-4}
+                  ]
+                }
+              ]
+            }`
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 2000
+      })
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const content = data.choices[0]?.message?.content;
+      
+      try {
+        const parsed = JSON.parse(content);
+        return parsed.questions;
+      } catch (parseError) {
+        console.error('Error parsing AI response:', parseError);
+        return null;
+      }
+    }
+  } catch (error) {
+    console.error('OpenRouter API error:', error);
+  }
+  
+  return null;
+};
+
+// @route   POST api/skills/ai-assessment
+// @desc    Generate AI-powered assessment questions
+// @access  Private
+router.post('/ai-assessment', auth, async (req, res) => {
+  try {
+    const { categories } = req.body;
+    const student = await Student.findById(req.user.id);
+    
+    const aiQuestions = await generateAIQuestions(categories, student);
+    
+    if (aiQuestions) {
+      res.json({ questions: aiQuestions });
+    } else {
+      // Fallback to default questions
+      const defaultQuestions = [
+        {
+          id: 1,
+          category: 'programming',
+          question: 'What is your experience level with programming languages?',
+          type: 'multiple_choice',
+          options: [
+            { value: 'beginner', label: 'Beginner (0-1 years)', score: 1 },
+            { value: 'intermediate', label: 'Intermediate (1-3 years)', score: 2 },
+            { value: 'advanced', label: 'Advanced (3-5 years)', score: 3 },
+            { value: 'expert', label: 'Expert (5+ years)', score: 4 }
+          ]
+        },
+        {
+          id: 2,
+          category: 'web_development',
+          question: 'Which web development technologies are you familiar with?',
+          type: 'multiple_select',
+          options: [
+            { value: 'html_css', label: 'HTML/CSS', score: 1 },
+            { value: 'javascript', label: 'JavaScript', score: 1 },
+            { value: 'react', label: 'React', score: 1 },
+            { value: 'nodejs', label: 'Node.js', score: 1 },
+            { value: 'databases', label: 'Databases (SQL/NoSQL)', score: 1 }
+          ]
+        }
+      ];
+      res.json({ questions: defaultQuestions });
+    }
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
 // @route   GET api/skills/learning-paths
 // @desc    Get curated learning paths
 // @access  Private
@@ -272,6 +384,112 @@ router.get('/recommended', auth, async (req, res) => {
       recommendedSkills: uniqueRecommendedSkills.slice(0, 10),
       currentSkills: student.skills
     });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   GET api/skills/progress
+// @desc    Get user's learning progress
+// @access  Private
+router.get('/progress', auth, async (req, res) => {
+  try {
+    const student = await Student.findById(req.user.id);
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    res.json({ progress: student.learningProgress || {} });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   POST api/skills/start-path
+// @desc    Start a learning path
+// @access  Private
+router.post('/start-path', auth, async (req, res) => {
+  try {
+    const { pathId } = req.body;
+    const student = await Student.findById(req.user.id);
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    if (!student.learningProgress) {
+      student.learningProgress = {};
+    }
+
+    student.learningProgress[pathId] = {
+      startedAt: new Date(),
+      completedSteps: [],
+      lastActivity: new Date()
+    };
+
+    await student.save();
+    res.json({ message: 'Learning path started successfully' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   POST api/skills/complete-step
+// @desc    Mark a learning step as complete
+// @access  Private
+router.post('/complete-step', auth, async (req, res) => {
+  try {
+    const { pathId, stepNumber } = req.body;
+    const student = await Student.findById(req.user.id);
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    if (!student.learningProgress || !student.learningProgress[pathId]) {
+      return res.status(400).json({ message: 'Learning path not started' });
+    }
+
+    const pathProgress = student.learningProgress[pathId];
+    if (!pathProgress.completedSteps.includes(stepNumber)) {
+      pathProgress.completedSteps.push(stepNumber);
+      pathProgress.lastActivity = new Date();
+    }
+
+    await student.save();
+    res.json({ message: 'Step marked as complete' });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Server error');
+  }
+});
+
+// @route   POST api/skills/add-goal
+// @desc    Add skill to learning goals
+// @access  Private
+router.post('/add-goal', auth, async (req, res) => {
+  try {
+    const { skill } = req.body;
+    const student = await Student.findById(req.user.id);
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    if (!student.learningGoals) {
+      student.learningGoals = [];
+    }
+
+    // Check if skill is already in learning goals
+    if (!student.learningGoals.includes(skill)) {
+      student.learningGoals.push(skill);
+      await student.save();
+    }
+
+    res.json({ message: 'Skill added to learning goals successfully' });
   } catch (err) {
     console.error(err.message);
     res.status(500).send('Server error');
